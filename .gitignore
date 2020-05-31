@@ -1,2 +1,7 @@
-data
+!data
+data/*
+!data/gps_header.csv
+
 models
+__pycache__
+.vscode
