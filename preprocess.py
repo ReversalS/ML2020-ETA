@@ -20,6 +20,8 @@ import seaborn as sns
 # contants (TODO: define enum)
 from enum import Enum
 
+CHUNK_SIZE = 1024 * 1024
+
 TIMESTAMP_FORMAT = '%Y-%m-%dT%H:%M:%S.000Z'
 RECORD_TIME_FORMAT = '%Y%m%d  %H:%M:%S'
 
