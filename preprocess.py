@@ -22,6 +22,7 @@ import seaborn as sns
 
 # contants (TODO: define enum)
 from enum import Enum
+from typing import Union, Optional
 
 CHUNK_SIZE = 1024 * 1024
 
@@ -87,6 +88,25 @@ def func_timer(function):
         print('function `{name}` took {time:.2f} seconds'.format(function.__name__, end_time - start_time))
         return result
     return function_timer
+
+
+def encode(encodee: Union[dict, set], strategy='one-hot') -> dict:
+    """
+    encode various states with selected strategy
+    """
+    if type(encodee) == dict:
+        encodee = list(encodee.keys())
+    elif type(encodee) == set:
+        encodee == list(encodee)
+    if strategy == 'one-hot':
+        e = np.eye(len(encodee))
+        return {key: e[i] for i, key in enumerate(encodee)}
+    elif strategy == 'uniform':
+        e = np.random.uniform(size=len(encodee))
+        return {key: e[i] for i, key in enumerate(encodee)}
+    else:
+        raise NotImplementedError
+    return {}
 
 
 def main():
@@ -246,18 +266,9 @@ class DataProcessor:
         # 2. need start pos (in get_etas)
         # 3. basic preprocessing
         # TODO: better feature engineering as mentioned above
-        for row in chunk.iterrows():
-            try:
-                a = order_to_port[row[0]]
-            except IndexError:
-                print(row)
-                assert 0
-            except KeyError:
-                print(row)
-                assert 0
         features = pd.DataFrame(
             [
-                [row[3], row[4], row[6], row[7]].extend(port_to_loc[order_to_port[row[0]][0]]) for row in chunk.iterrows()
+                chunk[3], chunk[4], chunk[6], chunk[7], chunk[0].apply(lambda x: port_to_loc[order_to_port[x][0]])
             ]
         )
 
