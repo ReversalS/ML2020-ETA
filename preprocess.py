@@ -33,7 +33,7 @@ vessel_status = {
     "under way using engine": 0,
     "under way sailing": 1,
     "at anchor": 2,
-    "not under command(失控)": 3,
+    "not under command": 3,
     "moored": 4,
     "contrained by her draft": 5,
 }
@@ -90,7 +90,7 @@ def func_timer(function):
     return function_timer
 
 
-def encode(encodee: Union[dict, set], strategy='one-hot') -> dict:
+def encode(encodee: Union[dict, set, list], strategy='one-hot') -> dict:
     """
     encode various states with selected strategy
     """
@@ -98,6 +98,7 @@ def encode(encodee: Union[dict, set], strategy='one-hot') -> dict:
         encodee = list(encodee.keys())
     elif type(encodee) == set:
         encodee == list(encodee)
+    
     if strategy == 'one-hot':
         e = np.eye(len(encodee))
         return {key: e[i] for i, key in enumerate(encodee)}
@@ -139,6 +140,10 @@ class DataProcessor:
         gps_record_reader = pd.read_csv(gps_path, header=None, low_memory=False, chunksize=CHUNK_SIZE)  # reset
         count = 0
         for chunk in gps_record_reader:
+            # 1. fill absent data
+            #   1.1 NextPort -> [start_port, end_port]
+            chunk[8].apply(lambda x: order_to_port[x])
+            # 2. generate feature and target
             feature_df, target_df = self._generate_feature_and_target(
                 chunk, 
                 port_to_loc=port_loc,
@@ -146,18 +151,18 @@ class DataProcessor:
                 order_to_eta=order_to_eta
             )
             if rewrite: # for debugging
-                feature_df.to_csv(os.path.join(self.cache_dir, 'features.csv'), mode='w', header=False)
-                target_df.to_csv(os.path.join(self.cache_dir, 'target.csv'), mode='w', header=False)
+                feature_df.to_csv(os.path.join(self.cache_dir, 'train_features.csv'), mode='w', header=False)
+                target_df.to_csv(os.path.join(self.cache_dir, 'train_target.csv'), mode='w', header=False)
                 rewrite = False
             else:
-                feature_df.to_csv(os.path.join(self.cache_dir, 'features.csv'), mode='a', header=False)
-                target_df.to_csv(os.path.join(self.cache_dir, 'target.csv'), mode='a', header=False)
+                feature_df.to_csv(os.path.join(self.cache_dir, 'train_features.csv'), mode='a', header=False)
+                target_df.to_csv(os.path.join(self.cache_dir, 'train_target.csv'), mode='a', header=False)
             count += 1
             if count > 1:   # for debugging
                 break
         
-        return pd.read_csv(os.path.join(self.cache_dir, 'features.csv'), header=None, low_memory=False, chunksize=CHUNK_SIZE), \
-            pd.read_csv(os.path.join(self.cache_dir, 'target.csv'), header=None, low_memory=False, chunksize=CHUNK_SIZE)
+        return pd.read_csv(os.path.join(self.cache_dir, 'train_features.csv'), header=None, low_memory=False, chunksize=CHUNK_SIZE), \
+            pd.read_csv(os.path.join(self.cache_dir, 'train_target.csv'), header=None, low_memory=False, chunksize=CHUNK_SIZE)
 
     def _generate_etas(self, port_loc, gps_record_reader, cached=True, test_mode=False):
 
@@ -167,8 +172,8 @@ class DataProcessor:
             port_standardizing = pickle.load(open(os.path.join(self.cache_dir, 'port_standardizing'), 'rb'))
             return port_mapping, eta_mapping, port_standardizing
 
-        port_mapping = {} # order -> [current nextPort, distance, timestamp, speed]
-        eta_mapping = {} # [order+nextPort] -> timestamp
+        port_mapping = {} # order -> [current nextPort, distance, timestamp, speed, start port (?)]
+        eta_mapping = {} # ["{order} from {start_port} to {end_port}"] -> timestamp
         port_standardizing = {} # informal port name -> most similar formal port name (NOT PRECISE)
         
         count = 0
@@ -184,10 +189,10 @@ class DataProcessor:
                         port_mapping[order][2] = timestamp
                         port_mapping[order][3] = speed
                     else :
-                        str = order + port_mapping[order][0]
+                        str = order + ' from ' + port_mapping[order][4] + ' to ' + port_mapping[order][0]
                         if str in eta_mapping :
                             if speed < port_mapping[order][3] : #slowing, preparing for stop
-                                eta_mapping[order] = timestamp
+                                eta_mapping[str] = timestamp
                         else :
                             eta_mapping.update({str: port_mapping[order][2]})
                             #print(cur_dis)
@@ -205,7 +210,9 @@ class DataProcessor:
                             nextport = port_standardizing[nextport][0]
 
                     if pd.isna(nextport) == False and port_mapping[order][0] != nextport : #update nextport
+                        port_mapping[order][4] = port_mapping[order][0]
                         port_mapping[order][0] = nextport
+                        #port_mapping[order][0] = [port_loc[nextport][0], port_loc[nextport][1]]
                     port_mapping[order][1] = cur_dis
                     port_mapping[order][2] = timestamp
                     port_mapping[order][3] = speed
@@ -223,7 +230,8 @@ class DataProcessor:
                                 nextport = port_standardizing[nextport][0]
 
                         cur_dis = getDistance(longitude, latitude, port_loc[nextport][0], port_loc[nextport][1])
-                        port_mapping.update({order: [nextport, cur_dis, timestamp, speed]})
+                        port_mapping.update({order: [nextport, cur_dis, timestamp, speed, 'start']})
+                        #port_mapping.update({order: [[port_loc[nextport][0], port_loc[nextport][1]], cur_dis, timestamp, speed, [longitude, latitude]]]})
 
                 count += 1
             if test_mode and count > CHUNK_SIZE * 2 :
@@ -239,15 +247,31 @@ class DataProcessor:
         return port_mapping, eta_mapping, port_standardizing
 
     
-    def load_test_data(self, test_data_path):
-        # load
-        # get paths
-        # vectorize
-        # return
-        pass
+    def load_test_data(self, test_data_path, rewrite=True):
+        # load (TODO: figure out how to load)
+        test_data_reader = pd.read_csv(test_data_path, header=None, low_memory=False, chunksize=CHUNK_SIZE)
+
+        count = 0
+        for chunk in test_data_reader:
+            feature_df = self._generate_feature(chunk, {}, {}, source='test')  # todo: modify
+            if rewrite: # for debugging
+                feature_df.to_csv(os.path.join(self.cache_dir, 'test_features.csv'), mode='w', header=False)
+                rewrite = False
+            else:
+                feature_df.to_csv(os.path.join(self.cache_dir, 'test_features.csv'), mode='a', header=False)
+            count += 1
+            if count > 1:   # for debugging
+                break
+        return pd.read_csv(os.path.join(self.cache_dir, 'test_features.csv'), header=None, low_memory=False, chunksize=CHUNK_SIZE), \
+            pd.read_csv(os.path.join(self.cache_dir, 'test_target.csv'), header=None, low_memory=False, chunksize=CHUNK_SIZE)
     
     def form_results(self, test_data, pred_deltas):
+        """
+        ..., ETA, creatDate
+        """
         pass
+        # ETA = timestamp + pred_delta[x]
+        test_data['creatDate'] = datetime.datetime.now().strftime(RECORD_TIME_FORMAT)
 
     @func_timer
     def _generate_feature_and_target(
@@ -266,10 +290,11 @@ class DataProcessor:
         # 2. need start pos (in get_etas)
         # 3. basic preprocessing
         # TODO: better feature engineering as mentioned above
-        features = pd.DataFrame(
-            [
-                chunk[3], chunk[4], chunk[6], chunk[7], chunk[0].apply(lambda x: port_to_loc[order_to_port[x][0]])
-            ]
+        features = self._generate_feature(
+            chunk,
+            port_to_loc,
+            order_to_port,
+            'train'
         )
 
         # y = eta - timestamp
@@ -280,13 +305,41 @@ class DataProcessor:
             self,
             chunk: pd.DataFrame, 
             port_to_loc: dict, 
-            order_to_port: dict
+            order_to_port: dict,
+            source='train'
         ):
         """
         the primary function for feature engineering
         used for both training data and testing data
         """
-        pass
+        if source == 'train':
+            # TODO: train feature generation
+            # order -> start_port, end_port -> port features
+            def map_to_double_ports(x) -> list:
+                """
+                map directly positions of start port and end port
+                """
+                order_info = order_to_port[x]
+                return port_to_loc[order_info[4]] + port_to_loc[order_info[0]]
+                
+            port_feature_df = chunk[0].apply(map_to_double_ports)\
+                .apply(pd.Series, index=['sp_lo', 'sp_la', 'sp_lo', 'sp_la'])
+            # status, data source encoding
+
+            # position, speed,
+            # other
+
+            # feature_df = pd.concat([chunk, port_feature_df], axis=1)
+
+        elif source == 'test':
+            # TODO: test feature generation
+            # TRACE -> start_port, end_port -> port features
+            # status
+        else:
+            raise NotImplementedError
+        
+        features = pd.DataFrame(chunk, columns=[0,2,3]) # example
+        features.columns = range(features.shape[1])
 
 
     def _get_paths(self, df):
