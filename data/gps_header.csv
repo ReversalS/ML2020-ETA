@@ -1,1 +1,1 @@
-loadingOrder,carrierName,timestamp,longtitue,latitude,vesselMMSI,speed,direction,vesselNextport,vesselNextportETA,vesselStatus,vesselDatasource,TRANSPORT_TRACE
+loadingOrder,carrierName,timestamp,longitude,latitude,vesselMMSI,speed,direction,vesselNextport,vesselNextportETA,vesselStatus,vesselDatasource,TRANSPORT_TRACE
