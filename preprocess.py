@@ -173,8 +173,49 @@ class DataProcessor:
                 target_file = open(os.path.join(self.cache_dir, 'train_target.csv'), 'ab')
                 trace_file = open(os.path.join(self.cache_dir, 'train_trace.csv'), 'ab')
             np.savetxt(feature_file, feature_narr, delimiter=',')
-            np.savetxt(target_file, target_narr, delimiter=',')
+            np.savetxt(target_file, target_narr, delimiter=',') # problematic: missing lines (TODO: modify this part)
             np.savetxt(trace_file, trace_narr, delimiter=',', fmt='%s')
+            count += 1
+            if debug and count > 0:   # for debugging
+                break
+
+    def dump_target(self, port_path, gps_path, event_path, test_path, rewrite=False, debug=False):
+        """
+        补救之前target算的是seconds而不是total_seconds
+        """
+        # prepare data
+        test_df = pd.read_csv(test_path, low_memory=False)
+        test_trace_dict = test_df['TRANSPORT_TRACE'].value_counts().to_dict()
+        test_trace_split_list = [x.split('-') for x in test_trace_dict]
+        self.vesselMMSI_encoding = encode(test_df['vesselMMSI'].value_counts().to_dict(), strategy='uniform', size=9)   # might be learned
+        self.carrier_name_encoding = encode(test_df['carrierName'].value_counts().to_dict(), strategy='one-hot')  # might be learned
+        port_df = pd.read_csv(port_path)
+        port_loc = {r['TRANS_NODE_NAME'] : [r['LONGITUDE'], r['LATITUDE']] for _, r in port_df.iterrows()}
+        # eta
+        gps_record_reader = pd.read_csv(gps_path, header=None, low_memory=False, chunksize=CHUNK_SIZE)
+        order_to_route_eta, start_dicts, _ = self._generate_test_data_oriented_eta(gps_record_reader, port_loc, cached=True)
+        # in-trajectory information extraction (not realized)
+        # generate training data
+        gps_record_reader = pd.read_csv(gps_path, header=None, low_memory=False, chunksize=CHUNK_SIZE)  # reset
+        count = 0
+        for chunk in gps_record_reader:
+            start_time = time.time()
+            target_narr = self._generate_target(
+                chunk, 
+                port_to_loc=port_loc,
+                order_to_route_eta=order_to_route_eta,
+                start_dicts=start_dicts
+            )
+            end_time = time.time()
+            print('feature and target generation took {} seconds'.format(end_time-start_time))
+            if rewrite: # for debugging
+                target_file = open(os.path.join(self.cache_dir, 'train_target.csv'), 'w')
+                rewrite = False
+            else:
+                target_file = open(os.path.join(self.cache_dir, 'train_target.csv'), 'a')
+            # np.savetxt(target_file, target_narr, delimiter=',', newline='\r\n')
+            target_file.writelines(['{}\n'.format(x) for x in target_narr])
+            target_file.close()
             count += 1
             if debug and count > 0:   # for debugging
                 break
@@ -536,7 +577,7 @@ class DataProcessor:
             if debug and count > 0:   # for debugging
                 break
 
-    def seperate_dataset_by_trace(self, trace_map_path, feature_path=None, target_path=None, rewrite=False):
+    def seperate_dataset_by_trace(self, source, trace_map_path, feature_path=None, target_path=None, rewrite=True):
         """
         only for feature or target
         """
@@ -549,22 +590,22 @@ class DataProcessor:
 
         def dump_chunks(chunk, trace_to_indexes, trace_to_file):
             for trace, index_list in trace_to_indexes.items():
-                chunk.loc[index_list].to_csv(trace_to_file[trace], mode='w', header=False, index=0) # index=0 means no index
+                chunk.iloc[index_list][:].to_csv(trace_to_file[trace], mode='a', header=False, index=0) # index=0 means no index
 
         test_traces = ['CNYTN-MXZLO', 'CNYTN-PAONX', 'CNSHK-CLVAP', 'CNYTN-ARENA', 'CNSHK-MYTPP', 'CNYTN-MATNG', 'CNSHK-GRPIR', 'CNYTN-CAVAN', 'CNHKG-MXZLO',
                 'CNSHK-SGSIN', 'CNYTN-RTM', 'CNSHA-SGSIN', 'CNSHK-SIKOP', 'COBUN-HKHKG', 'HKHKG-FRFOS', 'CNYTN-NZAKL', 'CNSHK-ESALG', 'CNSHK-ZADUR',
                 'CNSHA-PAMIT', 'CNSHK-PKQCT', 'CNSHK-LBBEY', 'CNYTN-MTMLA']
         if rewrite:
             for trace in test_traces:
-                f = open(os.path.join(self.cache_dir, 'trace_specific_dataset/{}_{}.csv'.format(trace, mode)), 'wb')
+                f = open(os.path.join(self.cache_dir, 'trace_specific_dataset/{}_{}_{}.csv'.format(trace, source, mode)), 'wb')
                 f.close()
-        # files = {trace: open(os.path.join(self.cache_dir, 'trace_specific_dataset/{}_{}.csv'.format(trace, mode)), 'ab') for trace in test_traces}
-        files = {trace: os.path.join(self.cache_dir, 'trace_specific_dataset/{}_{}.csv'.format(trace, mode)) for trace in test_traces}
+        # files = {trace: open(os.path.join(self.cache_dir, 'trace_specific_dataset/{}_{}_{}.csv'.format(trace, mode)), 'ab') for trace in test_traces}
+        files = {trace: os.path.join(self.cache_dir, 'trace_specific_dataset/{}_{}_{}.csv'.format(trace, source, mode)) for trace in test_traces}
         trace_reader = pd.read_csv(trace_map_path, header=None, low_memory=False, chunksize=CHUNK_SIZE)
         if mode == 'feature':
             data_reader = pd.read_csv(feature_path, header=None, low_memory=False, chunksize=CHUNK_SIZE)
         else:
-            data_reader = pd.read_csv(target_path, headerr=None, low_memory=False, chunksize=CHUNK_SIZE)
+            data_reader = pd.read_csv(target_path, header=None, low_memory=False, chunksize=CHUNK_SIZE)
         for trace_chunk, data_chunk in zip(trace_reader, data_reader):
             trace_mapping_cache = {}
             for i, trace in enumerate(trace_chunk[0]):
@@ -647,10 +688,10 @@ class DataProcessor:
             datasource_code = self.vessel_datasource_encoding[vesselDatasource] if vesselDatasource in self.vessel_datasource_encoding else vessel_datasource['<unk>']
             # longitude, latitude, speed, direction INHERIT
             route = route_eta_stime[0].split('-')
-            target_list.append(route_eta_stime[1].seconds)
+            target_list.append(abs(route_eta_stime[1].total_seconds()))
             start_port_location = port_to_loc[route[0]]
             end_port_location = port_to_loc[route[1]]
-            time_delta_from_start = abs(pd.to_datetime(timestamp, infer_datetime_format=True) - route_eta_stime[2]).seconds
+            time_delta_from_start = abs(pd.to_datetime(timestamp, infer_datetime_format=True) - route_eta_stime[2]).total_seconds()
             distance_from_start = getDistance(start_port_location[0], start_port_location[1],
                                         longitude, latitude)
             distance_to_end = getDistance(end_port_location[0], end_port_location[1],
@@ -697,7 +738,64 @@ class DataProcessor:
         
         target_narr = np.array(target_list)
         trace_narr = np.array(trace_list)
+        assert target_narr.shape[0] == feature_narr.shape[0]
         return feature_narr, target_narr, trace_narr
+
+    def _generate_target(
+            self,
+            chunk: pd.DataFrame, 
+            port_to_loc: dict,
+            order_to_route_eta: dict, 
+            start_dicts: dict, 
+        ):
+        """
+        补救之前target算的是seconds而不是total_seconds
+        """
+        test_routes = set(['CNYTN-MXZLO', 'CNYTN-PAONX', 'CNSHK-CLVAP', 'CNYTN-ARENA', 'CNSHK-MYTPP', 'CNYTN-MATNG', 'CNSHK-GRPIR', 'CNYTN-CAVAN', 'CNHKG-MXZLO',
+                'CNSHK-SGSIN', 'CNYTN-RTM', 'CNSHA-SGSIN', 'CNSHK-SIKOP', 'COBUN-HKHKG', 'HKHKG-FRFOS', 'CNYTN-NZAKL', 'CNSHK-ESALG', 'CNSHK-ZADUR',
+                'CNSHA-PAMIT', 'CNSHK-PKQCT', 'CNSHK-LBBEY', 'CNYTN-MTMLA'])
+        start_pn = ['CNYTN', 'CNSHK', 'CNHKG', 'CNSHA', 'COBUN', 'HKHKG']
+        chunk.columns = ['loadingOrder', 'carrierName', 'timestamp', 'longitude',
+                    'latitude', 'vesselMMSI', 'speed', 'direction', 'vesselNextport',
+                    'vesselNextportETA', 'vesselStatus', 'vesselDatasource', 'TRANSPORT_TRACE']
+
+        feature_dict = {col: [] for col in [
+            'carrier_name_code', 'MMSI_code', 'status_code', 'datasource_code',
+            'longitude', 'latitude', 'speed', 'direction',
+            'start_port_location', 'end_port_location',
+            'time_delta_from_start', 'distance_from_start', 'distance_to_end']}
+        target_list = []
+        # features: [先最简单的开始]
+
+        cached_orders = {}  # [order -> route, eta, start_time]. cached for chunk. faster mapping
+        # count = 0
+        for loadingOrder,carrierName,timestamp,longitude,latitude,vesselMMSI,speed,\
+            direction,vesselNextport,vesselNextportETA,vesselStatus,vesselDatasource,TRANSPORT_TRACE in zip(
+                chunk['loadingOrder'], chunk['carrierName'], chunk['timestamp'], chunk['longitude'],
+                chunk['latitude'], chunk['vesselMMSI'], chunk['speed'], chunk['direction'], chunk['vesselNextport'],
+                chunk['vesselNextportETA'], chunk['vesselStatus'], chunk['vesselDatasource'], chunk['TRANSPORT_TRACE']
+            ):
+            if loadingOrder not in cached_orders:
+                if loadingOrder not in order_to_route_eta:
+                    continue
+                else:
+                    route_eta_list = order_to_route_eta[loadingOrder].copy()
+                    route_eta = None
+                    for tr in route_eta_list:
+                        if tr[0] in test_routes:
+                            route_eta = list(tr)
+                            break
+                    if not route_eta:
+                        # del order_to_route_eta[getattr(row, 'loadingOrder')]
+                        continue
+                    sp_idx = start_pn.index(route_eta[0].split('-')[0])
+                    route_eta.append(start_dicts[sp_idx][loadingOrder])
+                    cached_orders[loadingOrder] = route_eta
+            route_eta_stime = cached_orders[loadingOrder]
+            target_list.append(abs(route_eta_stime[1].total_seconds()))
+            
+        target_narr = np.array(target_list)
+        return target_narr
 
     def _generate_feature(
             self,
@@ -739,7 +837,7 @@ class DataProcessor:
                 route = TRANSPORT_TRACE.split('-')
                 start_port_location = port_to_loc[route[0]]
                 end_port_location = port_to_loc[route[1]]
-                time_delta_from_start = abs(pd.to_datetime(timestamp, infer_datetime_format=True) - pd.to_datetime(onboardDate, infer_datetime_format=True).tz_localize('utc')).seconds
+                time_delta_from_start = abs(pd.to_datetime(timestamp, infer_datetime_format=True) - pd.to_datetime(onboardDate, infer_datetime_format=True).tz_localize('utc')).total_seconds()
                 distance_from_start = getDistance(start_port_location[0], start_port_location[1],
                                             longitude, latitude)
                 distance_to_end = getDistance(end_port_location[0], end_port_location[1],
