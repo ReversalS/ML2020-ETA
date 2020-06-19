@@ -577,7 +577,7 @@ class DataProcessor:
             if debug and count > 0:   # for debugging
                 break
 
-    def seperate_dataset_by_trace(self, source, trace_map_path, feature_path=None, target_path=None, rewrite=True):
+    def separate_dataset_by_trace(self, source, trace_map_path, feature_path=None, target_path=None, rewrite=True):
         """
         only for feature or target
         """
