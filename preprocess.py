@@ -620,12 +620,40 @@ class DataProcessor:
             
     def form_results(self, test_data, pred_deltas):
         """
-        results have exactly the same rows as test data
-        ..., ETA, creatDate
+        sample result forming function, need to be modified if actually used
         """
-        pass
-        # ETA = timestamp + pred_delta[x]
-        test_data['creatDate'] = datetime.datetime.now().strftime(RECORD_TIME_FORMAT)
+        results_path = 'the/path/of/results'
+        csvres_path = 'the/path/to/store/csv'
+        df = open(result_path, 'rb')
+        pred = pickle.load(df)
+        df.close()
+
+        index = {}
+        createTime = datetime.datetime.now()
+        createTime = createTime.strftime("%Y-%m-%d  %X")
+        res = None
+        for loadingOrder, timestamp, lon, lat, carr, mmsi, onbo, trace in zip(test_data['loadingOrder'], test_data['temp_timestamp'],
+                                                                            test_data['longitude'], test_data['latitude'], 
+                                                                            test_data['carrierName'], test_data['vesselMMSI'],
+                                                                            test_data['onboardDate'], test_data['TRANSPORT_TRACE']) :
+            if trace not in index :
+                index.update({trace : 0})
+            onbot = pd.to_datetime(onbo, infer_datetime_format=True)
+            eta = onbot + pd.to_timedelta(pred[trace][index[trace]] * 1e9)
+            eta = eta.strftime("%Y/%m/%d  %X")
+            t = [loadingOrder, timestamp, lon, lat, carr, mmsi, onbo, eta, createTime]
+            if res is None :
+                res = t
+            else :
+                res = np.row_stack((res, t))
+            index[trace] += 1
+        res = pd.DataFrame(res)
+        res.columns = ['loadingOrder', 'timestamp', 'longitude', 'latitude', 'carrierName', 'vesselMMSI', 'onboardDate',
+                    'ETA',
+                    'createDate']
+        res.to_csv(csvres_path, index=False)
+
+        # test_data['creatDate'] = datetime.datetime.now().strftime(RECORD_TIME_FORMAT)
 
     def _generate_feature_and_target(
             self,
